@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python run.py:*)",
+      "Bash(.venv/bin/python -c:*)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(.venv/bin/uvicorn:*)",
+      "Bash(python3 -m venv .venv)",
+      "Bash(ls:*)",
+      "Read(./outputs/**)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Edit(./.env)",
+      "Bash(cat .env:*)",
+      "Bash(less .env:*)",
+      "Bash(head .env:*)",
+      "Bash(tail .env:*)",
+      "Bash(printenv:*)",
+      "Bash(env)"
+    ]
+  }
+}

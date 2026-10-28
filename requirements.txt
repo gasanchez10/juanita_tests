@@ -1,0 +1,7 @@
+apify-client>=3.0
+openai>=1.50
+python-dotenv>=1.0
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.5
+markdown>=3.5
