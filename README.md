@@ -4,7 +4,7 @@ Le das un tema (palabra clave o `#hashtag`) y te devuelve:
 
 - **Videos**: URL, autor, caption, vistas, likes, comentarios, compartidos, guardados, hashtags y engagement rate.
 - **Comentarios**: texto, likes, usuario y URL del video.
-- **Sentimiento por comentario**: positivo, negativo, neutral o mixto, con score de -1 a 1, emoción y detección de sarcasmo.
+- **Sentimiento por comentario**: positivo, negativo o neutral, con score de -1 a 1, emoción y detección de sarcasmo.
 - **Agregados**: distribución de sentimiento, **Net Sentiment Score** (simple y ponderado por likes), emociones, videos más positivos y más negativos, y comentarios más likeados de cada polo.
 - **Lectura cualitativa (LLM)**: resumen, temas, elogios, quejas, preguntas frecuentes y alertas reputacionales.
 - **Archivos**: `outputs/<fecha>_<tema>/` con `report.md`, `report.json`, `videos.csv` y `comments.csv`.
@@ -19,6 +19,7 @@ Le das un tema (palabra clave o `#hashtag`) y te devuelve:
 
 Se abre el Swagger en http://localhost:8000/docs. Desde ahí corres `POST /analyze` y ves el reporte en `/reportes/{id}/ver`.
 
+- **Estructura del JSON, llave por llave:** [docs/ESTRUCTURA_JSON.md](docs/ESTRUCTURA_JSON.md) (también en http://localhost:8000/estructura-json)
 - **Guía de uso paso a paso:** [docs/GUIA_DE_USO.md](docs/GUIA_DE_USO.md) (también en http://localhost:8000/guia)
 - **Cómo funciona, con diagramas:** [docs/COMO_FUNCIONA.md](docs/COMO_FUNCIONA.md) (también en http://localhost:8000/como-funciona)
 

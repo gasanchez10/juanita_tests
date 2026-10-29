@@ -55,9 +55,35 @@ def normalize_comment(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+ORDENES = ("relevancia", "mas_likeados", "mas_recientes")
+_APIFY_SORT = {"relevancia": "MOST_RELEVANT", "mas_likeados": "MOST_LIKED", "mas_recientes": "LATEST"}
+COMMENT_OVERFETCH = 2  # el actor de comentarios no ordena: se trae el doble y se ordena aquí
+
+
+def sort_items(items: list[dict], orden: str) -> list[dict]:
+    """relevancia conserva el orden de TikTok; los otros ordenan por likes o por fecha (desc)."""
+    if orden == "mas_likeados":
+        return sorted(items, key=lambda x: x.get("likes") or 0, reverse=True)
+    if orden == "mas_recientes":
+        return sorted(items, key=lambda x: x.get("created_at") or "", reverse=True)
+    return list(items)
+
+
+def comments_to_fetch(per_video: int, orden: str) -> int:
+    return per_video if orden == "relevancia" else min(300, per_video * COMMENT_OVERFETCH)
+
+
+def _top_per_video(comments: list[dict], per_video: int, orden: str) -> list[dict]:
+    by_video: dict[str, list[dict]] = {}
+    for c in comments:
+        by_video.setdefault(c["video_url"], []).append(c)
+    return [c for cs in by_video.values() for c in sort_items(cs, orden)[:per_video]]
+
+
 class TikTokSource(Protocol):
-    def search_videos(self, topic: str, max_videos: int = 20) -> list[dict]: ...
-    def get_comments(self, video_urls: list[str], per_video: int = 50) -> list[dict]: ...
+    def search_videos(self, topic: str, max_videos: int = 20, orden: str = "relevancia",
+                      consultas: list[str] | None = None) -> list[dict]: ...
+    def get_comments(self, video_urls: list[str], per_video: int = 50, orden: str = "relevancia") -> list[dict]: ...
 
 
 # ---------------------------------------------------------------- Apify
@@ -73,11 +99,17 @@ class ApifySource:
             raise RuntimeError(f"El actor {actor} no devolvió ejecución")
         # apify-client ≥2 devuelve un modelo `Run`; 1.x devuelve un dict
         dataset_id = run["defaultDatasetId"] if isinstance(run, dict) else run.default_dataset_id
+        from .costos import record_apify
+        record_apify(actor, run)
         items = list(self.client.dataset(dataset_id).iterate_items())
         return [i for i in items if "errorCode" not in i and "error" not in i]
 
-    def search_videos(self, topic: str, max_videos: int = 20) -> list[dict]:
+    def search_videos(self, topic: str, max_videos: int = 20, orden: str = "relevancia",
+                      consultas: list[str] | None = None) -> list[dict]:
+        """Hashtag: el actor no ordena, se ordena aquí. Palabra clave: orden nativo de TikTok (add-on con costo)
+        y, si hay varias consultas, `max_videos` se reparte entre ellas."""
         topic = topic.strip()
+        queries = consultas or [topic]
         run_input: dict[str, Any] = {
             "resultsPerPage": max_videos,
             "shouldDownloadVideos": False,
@@ -88,7 +120,10 @@ class ApifySource:
         if topic.startswith("#"):
             run_input["hashtags"] = [topic.lstrip("#")]
         else:
-            run_input["searchQueries"] = [topic]
+            run_input["searchQueries"] = queries
+            run_input["resultsPerPage"] = -(-max_videos // len(queries))
+            if orden != "relevancia":
+                run_input["videoSearchSorting"] = _APIFY_SORT[orden]
         raw = self._run(settings.apify_search_actor, run_input)
         videos = [normalize_video(r) for r in raw]
         seen, out = set(), []
@@ -96,16 +131,16 @@ class ApifySource:
             if v["url"] and v["url"] not in seen:
                 seen.add(v["url"])
                 out.append(v)
-        return out[:max_videos]
+        return sort_items(out, orden)[:max_videos]
 
-    def get_comments(self, video_urls: list[str], per_video: int = 50) -> list[dict]:
+    def get_comments(self, video_urls: list[str], per_video: int = 50, orden: str = "relevancia") -> list[dict]:
         if not video_urls:
             return []
         raw = self._run(
             settings.apify_comments_actor,
-            {"postURLs": video_urls, "commentsPerPost": per_video, "maxRepliesPerComment": 0},
+            {"postURLs": video_urls, "commentsPerPost": comments_to_fetch(per_video, orden), "maxRepliesPerComment": 0},
         )
-        return [normalize_comment(r) for r in raw if r.get("text")]
+        return _top_per_video([normalize_comment(r) for r in raw if r.get("text")], per_video, orden)
 
 
 # ---------------------------------------------------------------- Mock
@@ -119,11 +154,11 @@ MOCK_COMMENTS: list[tuple[str, str, str, str, str]] = [
     ("Lo uso hace 3 meses y los resultados son increíbles 🔥", "resultados", "positivo", "usuario con experiencia propia", "a_favor"),
     ("Yo lo probé y no me funcionó para nada", "resultados", "negativo", "usuario con experiencia propia", "en_contra"),
     ("¿En cuánto tiempo se ven resultados?", "resultados", "neutral", "potencial comprador/interesado", "neutral"),
-    ("Funciona pero hay que ser constante, no es magia", "resultados", "mixto", "usuario con experiencia propia", "a_favor"),
+    ("Funciona pero hay que ser constante, no es magia", "resultados", "positivo", "usuario con experiencia propia", "a_favor"),
     ("Soy nutricionista y sí, tiene buena evidencia científica", "seguridad y efectos", "positivo", "experto/profesional", "a_favor"),
     ("A mí me dio efectos secundarios, cuidado", "seguridad y efectos", "negativo", "usuario con experiencia propia", "en_contra"),
     ("¿Tiene efectos secundarios?", "seguridad y efectos", "neutral", "potencial comprador/interesado", "neutral"),
-    ("Como médico: consulten antes, no es para todo el mundo", "seguridad y efectos", "mixto", "experto/profesional", "neutral"),
+    ("Como médico: consulten antes, no es para todo el mundo", "seguridad y efectos", "neutral", "experto/profesional", "neutral"),
     ("Por fin alguien que explica con evidencia 👏", "credibilidad del contenido", "positivo", "seguidor del creador", "a_favor"),
     ("Esto es pura desinformación, publicidad disfrazada", "credibilidad del contenido", "negativo", "escéptico/crítico", "en_contra"),
     ("Sí claro, y yo soy astronauta 🙄", "credibilidad del contenido", "negativo", "escéptico/crítico", "en_contra"),
@@ -146,7 +181,8 @@ class MockSource:
     def _rng(self, key: str) -> random.Random:
         return random.Random(int(hashlib.md5(key.encode()).hexdigest()[:8], 16))
 
-    def search_videos(self, topic: str, max_videos: int = 20) -> list[dict]:
+    def search_videos(self, topic: str, max_videos: int = 20, orden: str = "relevancia",
+                      consultas: list[str] | None = None) -> list[dict]:
         rng = self._rng(topic)
         tag = topic.lstrip("#").replace(" ", "").lower()
         now = datetime.now(timezone.utc)
@@ -178,9 +214,10 @@ class MockSource:
                 "is_ad": rng.random() < 0.08,
                 "location": "CO",
             })
-        return out
+        return sort_items(out, orden)
 
-    def get_comments(self, video_urls: list[str], per_video: int = 50) -> list[dict]:
+    def get_comments(self, video_urls: list[str], per_video: int = 50, orden: str = "relevancia") -> list[dict]:
+        wanted, per_video = per_video, comments_to_fetch(per_video, orden)
         out = []
         user_pool = [f"user{n}" for n in range(1000, 1000 + max(30, len(video_urls) * per_video * 3))]
         for url in video_urls:
@@ -198,7 +235,7 @@ class MockSource:
                     "created_at": (base + timedelta(hours=int(rng.expovariate(1 / 30)))).isoformat(),
                     "user": rng.choice(user_pool),
                 })
-        return out
+        return _top_per_video(out, wanted, orden)
 
 
 def get_source() -> TikTokSource:

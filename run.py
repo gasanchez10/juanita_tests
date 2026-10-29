@@ -32,6 +32,9 @@ def main() -> int:
     a.add_argument("topic")
     a.add_argument("--videos", type=int, default=20)
     a.add_argument("--comments", type=int, default=50)
+    a.add_argument("--orden-videos", choices=["relevancia", "mas_likeados", "mas_recientes"], default="relevancia")
+    a.add_argument("--orden-comentarios", choices=["relevancia", "mas_likeados", "mas_recientes"], default="relevancia")
+    a.add_argument("--contexto", default="", help="Qué significa el tema y qué excluir")
     a.add_argument("--mock", action="store_true")
     c = sub.add_parser("comments", help="Comentarios + sentimiento de URLs concretas (JSON)")
     c.add_argument("urls", nargs="+")
@@ -52,7 +55,8 @@ def main() -> int:
 
     if args.cmd == "analyze":
         from tiktok_agent.analysis import analyze_topic, render_markdown
-        m = analyze_topic(args.topic, args.videos, args.comments)
+        m = analyze_topic(args.topic, args.videos, args.comments, orden_videos=args.orden_videos,
+                          orden_comentarios=args.orden_comentarios, contexto=args.contexto)
         print(render_markdown(m))
         print(f"\n📁 Reporte guardado en: {m['output_dir']}")
         return 0

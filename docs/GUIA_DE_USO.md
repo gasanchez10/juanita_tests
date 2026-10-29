@@ -101,19 +101,34 @@ Tarda unos segundos. Usa datos inventados, así que **no saques conclusiones de 
 
 ### Paso 3. Análisis real: `POST /analyze`
 
+Antes de una corrida real, revisa el saldo con **`GET /saldo`**: muestra cuánto crédito queda en Apify y para cuántos análisis estándar alcanza.
+
 ```json
 {
-  "topic": "calidad del aire Bosa",
+  "topic": "inseguridad Bosa",
+  "contexto": "delincuencia, robos y atracos en la localidad de Bosa, Bogotá",
   "max_videos": 20,
   "comments_per_video": 50,
+  "orden_videos": "relevancia",
+  "orden_comentarios": "mas_likeados",
   "modo_prueba": false
 }
 ```
 
 - **`topic`**: una palabra clave (`creatina`) o un hashtag (`#skincarecolombia`). Si empieza con `#`, busca por hashtag.
+- **`contexto`** (opcional, recomendado): en una frase, qué significa el tema y qué no. El agente igual interpreta el tema solo, genera varias búsquedas (por ejemplo "robos en Bosa", "delincuencia Bosa") y **descarta los videos que no tratan del tema antes de descargar sus comentarios**. El contexto lo hace más preciso cuando el tema es ambiguo.
 - **`max_videos`**: cuántos videos analizar (1 a 100).
 - **`comments_per_video`**: cuántos comentarios por video (0 a 300).
-- **`confirmar_costo`**: si pides más de 3.000 comentarios en total (por ejemplo 50 × 100), el agente se detiene, te muestra el costo estimado y te pide repetir la petición con `"confirmar_costo": true`.
+- **`orden_videos`**: qué videos traer.
+  - `relevancia` (por defecto): los que TikTok considera más relevantes.
+  - `mas_likeados`: los de más likes. Con palabra clave lo ordena TikTok y cuesta un poco más (~USD 0,0013 por video); con hashtag se ordena la muestra encontrada.
+  - `mas_recientes`: los más nuevos, con el mismo funcionamiento.
+- **`orden_comentarios`**: qué comentarios quedarse de cada video.
+  - `relevancia` (por defecto): el orden de TikTok, que favorece los más visibles.
+  - `mas_likeados` o `mas_recientes`: como Apify no permite pedir ese orden, se descarga el **doble** de comentarios y se quedan los primeros según el orden. **Duplica el costo de comentarios.**
+- **`confirmar_costo`**: si la corrida descargaría más de 3.000 comentarios, el agente se detiene, te muestra el costo máximo estimado y te pide repetir la petición con `"confirmar_costo": true`.
+- Si el costo máximo supera el saldo de Apify, la corrida se rechaza (código 402) antes de gastar nada.
+- Si ningún video de la búsqueda trata del tema, el análisis se detiene antes de descargar comentarios y te sugiere reformular.
 
 ⏱️ Un análisis real tarda **entre 1 y 5 minutos**. El Swagger mostrará "Loading" todo ese tiempo y en la Terminal verás el avance. No cierres la página.
 
@@ -137,6 +152,7 @@ Para ver todos los análisis hechos hasta ahora: **http://localhost:8000/reporte
 
 | Operación | Para qué |
 |---|---|
+| `GET /saldo` | Crédito disponible en Apify, cuántos análisis alcanzan y si hay que recargar |
 | `GET /reportes` | Lista de reportes en JSON (tema, fecha, modo, NSS) |
 | `GET /reportes/{report_id}` | Cifras clave e informe de un reporte, en JSON |
 | `GET /reportes/{report_id}/descargar/{archivo}` | Descarga `report.md`, `report.json`, `videos.csv` o `comments.csv`. Los CSV abren bien en Excel |
@@ -149,10 +165,13 @@ Para ver todos los análisis hechos hasta ahora: **http://localhost:8000/reporte
 
 **Primero, el modo.** Si arriba aparece la franja amarilla "🧪 Modo mock", los datos son sintéticos. Solo los reportes sin esa franja son datos reales de TikTok.
 
+El significado de cada llave del JSON está en [Estructura del JSON](/estructura-json) (`docs/ESTRUCTURA_JSON.md`).
+
 **Tablero**
 
 | Métrica | Qué significa |
 |---|---|
+| **Sentimiento** | Tres clases: positivo, negativo y neutral. Un comentario que mezcla elogio y crítica toma la polaridad que domina; si ninguna domina, es neutral |
 | **NSS** (Net Sentiment Score) | % positivos − % negativos, de −100 a 100. ≥30 claramente positivo · 10 a 30 moderadamente positivo · −10 a 10 equilibrado · −30 a −10 moderadamente negativo · ≤−30 claramente negativo |
 | **NSS ponderado por likes** | El mismo cálculo, pero cada comentario pesa según sus likes. Si es más bajo que el NSS simple, la audiencia **amplifica las críticas**; si es más alto, amplifica lo favorable |
 | **IC95** | Rango probable del % real. Si los rangos de positivo y negativo se cruzan, no se puede afirmar cuál domina |
@@ -160,6 +179,10 @@ Para ver todos los análisis hechos hasta ahora: **http://localhost:8000/reporte
 | **Engagement mediano** | (likes + comentarios + compartidos + guardados) ÷ vistas, en el video típico |
 
 **Informe en prosa**: lo escribe el modelo analista a partir de las estadísticas. Cubre resumen, volumen, quién publica, quién comenta, qué se dice, sentimiento, evolución, riesgos, recomendaciones y notas metodológicas.
+
+**Búsqueda**: cómo interpretó el agente el tema, qué consultas usó, el orden pedido y qué videos descartó por no tratar del tema (con el motivo). Revísala primero: si la interpretación no es la que querías, repite con `contexto`.
+
+**Costo de la corrida**: tokens del LLM, costo del LLM y de Apify, total y saldo restante. Si hay que recargar, aparece una alerta ⚠️.
 
 **Anexos**: tablas por aspecto (subtema), perfil de comentarista, tamaño de creador y top creadores.
 
@@ -178,11 +201,15 @@ Para ver todos los análisis hechos hasta ahora: **http://localhost:8000/reporte
 | Uso | Ajustes | Comentarios | Costo aproximado |
 |---|---|---:|---|
 | Modo prueba | `modo_prueba: true` | sintéticos | USD 0 |
-| Prueba de humo | 5 videos × 20 | 100 | < USD 0,10 |
-| Análisis estándar | 20 × 50 | 1.000 | USD 0,5–5 |
-| Profundo | 50 × 100 | 5.000 | USD 3–25 (pide confirmación) |
+| Prueba de humo | 5 videos × 20 | 100 | ~USD 0,15–0,20 |
+| Análisis estándar | 20 × 50 | 1.000 | ~USD 1,3–1,5 |
+| Estándar con comentarios más likeados o recientes | 20 × 50 | 2.000 descargados | ~USD 2,6–2,9 |
+| Profundo | 50 × 100 | 5.000 | ~USD 6,6 (pide confirmación) |
 
-Casi todo el costo es de Apify, que cobra por resultado. El LLM cuesta centavos. Puedes ver el consumo en [console.apify.com](https://console.apify.com) → Billing y en [platform.openai.com/usage](https://platform.openai.com/usage).
+Valores con las tarifas del plan gratuito de Apify en octubre de 2026: USD 0,0037 por video y USD 0,00125 por comentario. Los planes pagos son más baratos. El LLM suma unos centavos por corrida.
+
+- **Saldo de Apify:** `GET /saldo`, o la sección "Costo de la corrida" de cada reporte. El plan gratuito trae USD 5 al mes; cuando no alcanza para un análisis estándar, el reporte muestra `necesita_recarga: true`.
+- **Saldo de OpenAI:** no se puede consultar por API con una llave normal. Revísalo en [platform.openai.com/settings/organization/billing](https://platform.openai.com/settings/organization/billing).
 
 ---
 

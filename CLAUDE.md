@@ -67,9 +67,13 @@ Variables de `.env` (ver `.env.example`):
 .venv/bin/uvicorn tiktok_agent.api:app --port 8000      # o ./iniciar.sh  (Windows: iniciar.ps1)
 ```
 
-API (`api.py`): `GET /diagnostico` · `POST /analyze` (`modo_prueba` alterna mock por petición; > 3.000 comentarios exige `confirmar_costo`) · `GET /reportes[/ver]` · `GET /reportes/{id}[/ver]` · `GET /reportes/{id}/descargar/{archivo}` · `POST /search` · `POST /comments` · `/guia` y `/como-funciona` renderizan `docs/*.md` (Mermaid). Los `operation_id` de `/analyze`, `/search` y `/comments` son los nombres de las tools en Foundry: no los cambies. Si cambias el pipeline, actualiza `docs/COMO_FUNCIONA.md`.
+API (`api.py`): `GET /diagnostico` · `POST /analyze` (`modo_prueba` alterna mock por petición; > 3.000 comentarios exige `confirmar_costo`) · `GET /reportes[/ver]` · `GET /reportes/{id}[/ver]` · `GET /reportes/{id}/descargar/{archivo}` · `POST /search` · `POST /comments` · `GET /saldo` · `/guia`, `/como-funciona` y `/estructura-json` renderizan `docs/*.md` (Mermaid). Los `operation_id` de `/analyze`, `/search` y `/comments` son los nombres de las tools en Foundry: no los cambies. Si cambias el pipeline, actualiza `docs/COMO_FUNCIONA.md`; si cambias llaves del JSON, `docs/ESTRUCTURA_JSON.md`.
 
 - `#` al inicio → búsqueda por hashtag; sin `#` → búsqueda por palabra clave.
+- `--contexto "…"` (API: `contexto`) aclara qué significa el tema. Siempre corre un plan de búsqueda (gpt-4.1): interpreta el tema, genera 2–4 consultas y filtra videos irrelevantes **antes** de pagar comentarios. Revisa `filtro_relevancia` y menciónalo si se descartaron videos.
+- `--orden-videos` / `--orden-comentarios`: `relevancia` (defecto), `mas_likeados`, `mas_recientes`. En comentarios, los dos últimos descargan el doble (el actor no ordena) → duplican el costo de comentarios.
+- Sentimiento de 3 clases: positivo, negativo, neutral (ya no existe `mixto`).
+- Cada reporte trae `costos` (tokens y USD reales de la corrida) y `saldo` (crédito Apify; OpenAI no expone saldo). Antes de correr puedes consultar `costos.saldo()` o `GET /saldo`. Documentación completa de llaves: `docs/ESTRUCTURA_JSON.md`.
 - Límites: `--videos` 1–100, `--comments` 0–300 por video.
 - Una corrida real tarda entre 1 y 5 minutos, casi todo esperando a Apify. Usa un timeout de Bash de 600000 ms en corridas grandes.
 
@@ -79,11 +83,11 @@ API (`api.py`): `GET /diagnostico` · `POST /analyze` (`modo_prueba` alterna moc
 
 | Uso | Flags | Comentarios | Costo aprox. (Apify + LLM) |
 |---|---|---:|---|
-| Prueba de humo | `--videos 5 --comments 20` | 100 | < USD 0,10 |
-| Análisis estándar | `--videos 20 --comments 50` | 1.000 | ~USD 0,5–5 (según la tarifa del actor de comentarios) |
-| Profundo | `--videos 50 --comments 100` | 5.000 | ~USD 3–25 → **confirmar antes** |
+| Prueba de humo | `--videos 5 --comments 20` | 100 | ~USD 0,16 (medido) |
+| Análisis estándar | `--videos 20 --comments 50` | 1.000 | ~USD 1,4 |
+| Profundo | `--videos 50 --comments 100` | 5.000 | ~USD 6,6 → **confirmar antes** |
 
-El costo de Apify depende de la tarifa vigente de cada actor (pay-per-result). El LLM cuesta poco con gpt-4o-mini.
+Tarifas Apify plan FREE (oct-2026): USD 0,0037/video, USD 0,00125/comentario, +0,0013/video si se ordena la búsqueda. El plan FREE trae USD 5/mes: revisa `saldo` antes de corridas grandes. El LLM suma centavos.
 
 ---
 
@@ -96,7 +100,7 @@ Cuando el usuario diga algo como *"¿qué se dice de X en TikTok?"*, *"analiza #
 3. **Lee los resultados.** Toma la ruta de la última línea (`📁 Reporte guardado en: …`). Lee `report.md` completo y, para preguntas puntuales, `report.json`.
 4. **Responde** en este orden:
    - Una línea con el modo (real o mock), la muestra (N videos, N comentarios analizados, N comentaristas únicos) y la fecha.
-   - **Tablero**: tabla con vistas, NSS simple y ponderado por likes, % positivo/negativo/neutral/mixto con IC95, spam y engagement mediano.
+   - **Tablero**: tabla con vistas, NSS simple y ponderado por likes, % positivo/negativo/neutral con IC95, spam y engagement mediano.
    - **El informe en prosa** (`report.json → informe`) completo. Puedes ajustar el formato, pero no lo recortes ni le agregues datos.
    - Dónde quedó el reporte y **2 o 3 profundizaciones concretas** (un aspecto, un creador, un perfil de comentarista, comparar con otro tema).
 5. **Seguimientos.** Responde con el `report.json` ya generado antes de volver a correr. Corre de nuevo solo si piden otro tema, más muestra o datos frescos.
@@ -116,12 +120,18 @@ Cuando el usuario diga algo como *"¿qué se dice de X en TikTok?"*, *"analiza #
 
 ```
 topic, mode (mock|live), generated_at, elapsed_s, output_dir, aspect_taxonomy[]
+parametros: topic, contexto, max_videos, comments_per_video, orden_videos, orden_comentarios
+filtro_relevancia: interpretacion, consultas[], incluir[], excluir[], videos_encontrados, videos_relevantes, videos_usados, descartados[{autor,url,caption,motivo}]
+costos:    llm{por_modelo{<modelo>{llamadas,tokens_entrada,tokens_salida,tokens_total,costo_usd_estimado}}, tokens_total, costo_usd_estimado},
+           apify{corridas[{actor,run_id,eventos_cobrados,costo_usd}], costo_usd}, total_usd_estimado
+saldo:     apify{plan, uso_mes_usd, limite_mes_usd, disponible_usd, ciclo_termina, analisis_estandar_restantes}, openai{disponible_usd: null, nota},
+           necesita_recarga, alertas[]
 volumen:   videos, creadores_unicos, comentarios_reportados_en_videos, comentarios_extraidos,
            comentarios_analizados_sin_spam, spam_detectado, spam_pct, cobertura_muestra_pct,
            comentaristas_unicos, comentarios_por_comentarista, comentaristas_recurrentes, pct_comentarios_de_recurrentes
 alcance:   vistas, likes, compartidos, guardados, vistas_mediana_por_video, engagement_rate_mediano_pct,
            concentracion_vistas_top1_pct, concentracion_vistas_top3_pct, videos_publicidad
-sentimiento: global{n, pct{positivo,negativo,neutral,mixto}, nss, counts, ci95_positivo, ci95_negativo,
+sentimiento: global{n, pct{positivo,negativo,neutral}, nss, counts, ci95_positivo, ci95_negativo,
              avg_score, std_score, polarizacion_pct}, ponderado_por_likes{pct, nss}, emociones{}, sarcasmo_pct,
              postura{a_favor, en_contra, neutral}
 comentaristas_por_perfil[]: perfil, n, pct, nss, pct_positivo, pct_negativo, likes_promedio
@@ -169,7 +179,8 @@ tiktok_agent/
   api.py                    FastAPI: POST /analyze, /search, /comments (+ x-api-key opcional) → /openapi.json para Foundry
 ```
 
-Flujo: `search_videos → get_comments → build_taxonomy → classify_comments → classify_videos → compute_stats → expert_report → archivos`.
+Flujo: `plan_search → search_videos (2×) → classify_videos (relevancia) → get_comments (solo relevantes) → build_taxonomy → classify_comments → compute_stats → expert_report → costos/saldo → archivos`.
+`costos.py`: tracker por corrida (contextvar; los hilos usan `sentiment._parallel` para heredarlo), precios LLM en `LLM_PRICES_PER_M`, tarifas Apify por plan, `saldo()`. Toda llamada al LLM del pipeline pasa por `llm.chat()` para contar tokens.
 
 ### Convenciones para modificar el código
 
@@ -195,7 +206,7 @@ Flujo: `search_videos → get_comments → build_taxonomy → classify_comments 
 | Muchos aspectos "otro" | Taxonomía pobre para el tema | Más comentarios o mejorar el prompt de `build_taxonomy` |
 | Informe genérico | El deployment del analista es débil | Configurar `AZURE_OPENAI_ANALYST_DEPLOYMENT` con gpt-4.1 o superior |
 
-Nota: el mapeo de campos de los actores de Apify se escribió según su documentación pública y **aún no se ha validado con una corrida real**. En la primera corrida real, verifica que `videos.csv` tenga vistas, seguidores y fechas con valores, y que `comments.csv` tenga texto y likes.
+Nota: el mapeo de campos de los actores de Apify se validó con corridas reales (20 y 28 de octubre de 2026). Si un actor cambia su esquema, verifica que `videos.csv` tenga vistas, seguidores y fechas, y que `comments.csv` tenga texto y likes.
 
 ---
 

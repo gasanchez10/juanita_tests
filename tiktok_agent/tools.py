@@ -10,16 +10,18 @@ from .sentiment import build_taxonomy, classify_comments
 from .tiktok_source import get_source
 
 
-def analyze_tiktok_topic(topic: str, max_videos: int = 20, comments_per_video: int = 50) -> dict:
-    """Análisis completo de un tema: videos, URLs, métricas, comentarios, sentimiento, temas y alertas."""
+def analyze_tiktok_topic(topic: str, max_videos: int = 20, comments_per_video: int = 50,
+                         orden_videos: str = "relevancia", orden_comentarios: str = "relevancia", contexto: str = "") -> dict:
+    """Análisis completo de un tema: videos, URLs, métricas, comentarios, sentimiento, temas, costos y saldo."""
     max_videos = max(1, min(int(max_videos), 100))
     comments_per_video = max(0, min(int(comments_per_video), 300))
-    return compact(analyze_topic(topic, max_videos, comments_per_video))
+    return compact(analyze_topic(topic, max_videos, comments_per_video, orden_videos=orden_videos,
+                                 orden_comentarios=orden_comentarios, contexto=contexto))
 
 
-def search_tiktok_videos(topic: str, max_videos: int = 10) -> dict:
+def search_tiktok_videos(topic: str, max_videos: int = 10, orden_videos: str = "relevancia") -> dict:
     """Busca videos por palabra clave o #hashtag. Devuelve URL, autor, caption y métricas."""
-    vids = get_source().search_videos(topic, max_videos=max(1, min(int(max_videos), 50)))
+    vids = get_source().search_videos(topic, max_videos=max(1, min(int(max_videos), 50)), orden=orden_videos)
     return {"topic": topic, "count": len(vids), "videos": vids}
 
 
@@ -49,6 +51,9 @@ TOOL_SCHEMAS = [
             "topic": {"type": "string", "description": "Palabra clave o #hashtag, ej. 'Petro reforma', '#skincare'"},
             "max_videos": {"type": "integer", "default": 20, "description": "1-100"},
             "comments_per_video": {"type": "integer", "default": 50, "description": "0-300"},
+            "orden_videos": {"type": "string", "enum": ["relevancia", "mas_likeados", "mas_recientes"], "default": "relevancia"},
+            "orden_comentarios": {"type": "string", "enum": ["relevancia", "mas_likeados", "mas_recientes"], "default": "relevancia"},
+            "contexto": {"type": "string", "description": "Opcional: qué significa el tema y qué excluir, ej. 'delincuencia y robos en la localidad de Bosa, Bogotá'"},
         }, "required": ["topic"]},
     }},
     {"type": "function", "function": {
@@ -57,6 +62,7 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "topic": {"type": "string"},
             "max_videos": {"type": "integer", "default": 10},
+            "orden_videos": {"type": "string", "enum": ["relevancia", "mas_likeados", "mas_recientes"], "default": "relevancia"},
         }, "required": ["topic"]},
     }},
     {"type": "function", "function": {

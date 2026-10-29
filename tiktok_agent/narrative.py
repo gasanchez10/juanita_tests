@@ -31,12 +31,20 @@ Reglas:
 - Señala si la conversación está concentrada en pocos videos o creadores.
 - Riesgos/oportunidades: concretos y accionables (reputación, desinformación, demanda insatisfecha, preguntas sin responder, aliados potenciales).
 - Recomendaciones: 4–6 bullets accionables para una marca/organización interesada en el tema.
-- Notas metodológicas: muestra no probabilística, cobertura de comentarios, limitaciones.
+- Notas metodológicas: muestra no probabilística, cobertura de comentarios, cómo se interpretó el tema y cuántos videos se descartaron por no tratarlo (filtro_relevancia), limitaciones.
+- El sentimiento solo tiene tres clases: positivo, negativo y neutral.
+- Los IC95 existen solo para % positivo y % negativo; nunca atribuyas un intervalo al NSS. Si los IC95 se solapan, di que no se puede afirmar qué polo domina.
+- Solo di que la audiencia "amplifica" críticas o elogios si el NSS ponderado difiere del simple en 5 puntos o más; si no, di que ambos coinciden.
+- No afirmes riesgos (p. ej. desinformación) ni patrones (p. ej. "los negativos reciben más likes") que no se sigan de una cifra concreta de las estadísticas.
+- Usa la interpretación del tema de filtro_relevancia; no describas contenido descartado como parte de la conversación.
 - Extensión: 700–1100 palabras. Comienza directamente con '## Resumen ejecutivo'."""
 
 
 def _slim(stats: dict) -> dict:
-    s = {k: v for k, v in stats.items() if k not in ("videos",)}
+    s = {k: v for k, v in stats.items() if k not in ("videos", "costos", "saldo")}
+    if stats.get("filtro_relevancia"):
+        f = stats["filtro_relevancia"]
+        s["filtro_relevancia"] = {**{k: v for k, v in f.items() if k != "descartados"}, "descartados": len(f["descartados"])}
     s["videos_mas_positivos"] = [{k: v[k] for k in ("author", "views", "nss", "angle", "url")} for v in stats["videos_mas_positivos"]]
     s["videos_mas_negativos"] = [{k: v[k] for k in ("author", "views", "nss", "angle", "url")} for v in stats["videos_mas_negativos"]]
     s["temporal"] = {**stats["temporal"], "comentarios_por_dia": stats["temporal"]["comentarios_por_dia"][-21:]}
@@ -46,10 +54,10 @@ def _slim(stats: dict) -> dict:
 def expert_report(stats: dict) -> str:
     if settings.mock or not settings.has_llm:
         return template_report(stats)
-    from .llm import analyst_model_name, get_client
+    from .llm import analyst_model_name, chat
 
-    resp = get_client().chat.completions.create(
-        model=analyst_model_name(), temperature=0.3,
+    resp = chat(
+        analyst_model_name(), temperature=0.3,
         messages=[{"role": "system", "content": _SYSTEM},
                   {"role": "user", "content": f"Tema: {stats['topic']}\n\nEstadísticas (JSON):\n"
                                               + json.dumps(_slim(stats), ensure_ascii=False, default=str)}],
@@ -141,8 +149,8 @@ def template_report(s: dict) -> str:
     emo = list(se["emociones"].items())[:3]
     P.append(
         f"Sobre {g['n']} comentarios, el {g['pct']['positivo']}% es positivo (IC95 {g['ci95_positivo'][0]}–{g['ci95_positivo'][1]}%), "
-        f"el {g['pct']['negativo']}% negativo (IC95 {g['ci95_negativo'][0]}–{g['ci95_negativo'][1]}%), el {g['pct']['neutral']}% neutral "
-        f"y el {g['pct']['mixto']}% mixto. "
+        f"el {g['pct']['negativo']}% negativo (IC95 {g['ci95_negativo'][0]}–{g['ci95_negativo'][1]}%) "
+        f"y el {g['pct']['neutral']}% neutral. "
         + ("Los intervalos no se solapan, así que la diferencia entre positivos y negativos es robusta. "
            if g['ci95_positivo'][0] > g['ci95_negativo'][1] or g['ci95_negativo'][0] > g['ci95_positivo'][1]
            else "Los intervalos se solapan, así que no se puede afirmar con confianza qué polo domina. ")

@@ -16,10 +16,13 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
-from . import tools
+from . import costos, tools
 from .config import settings
+from .tiktok_source import comments_to_fetch
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS_DIR = ROOT / "docs"
@@ -40,11 +43,12 @@ app = FastAPI(
         "2. `POST /analyze` con `modo_prueba: true`: corrida gratis con datos sintéticos.\n"
         "3. `POST /analyze` con `modo_prueba: false`: corrida real (cuesta dinero, tarda 1–5 min).\n"
         "4. Abre el enlace `enlaces.ver` de la respuesta en el navegador para leer el reporte organizado.\n\n"
-        "Guía completa: [/guia](/guia) · Cómo funciona por dentro: [/como-funciona](/como-funciona)"
+        "Guía completa: [/guia](/guia) · Cómo funciona por dentro: [/como-funciona](/como-funciona) · "
+        "Estructura del JSON: [/estructura-json](/estructura-json)"
     ),
     servers=[{"url": os.getenv("PUBLIC_BASE_URL", "http://localhost:8000")}],
     openapi_tags=[
-        {"name": "1. Inicio", "description": "Estado del servicio y diagnóstico de llaves."},
+        {"name": "1. Inicio", "description": "Estado del servicio, diagnóstico de llaves y saldo disponible."},
         {"name": "2. Análisis", "description": "Corre el agente sobre un tema."},
         {"name": "3. Reportes", "description": "Consulta, lee y descarga reportes ya generados."},
         {"name": "4. Herramientas del agente",
@@ -68,10 +72,23 @@ def check_key(x_api_key: str | None = Header(default=None, description="Solo si 
 
 
 # ------------------------------------------------------------------ modelos
+Orden = Literal["relevancia", "mas_likeados", "mas_recientes"]
+
+
 class AnalyzeIn(BaseModel):
-    topic: str = Field(..., description="Palabra clave o #hashtag", examples=["calidad del aire Bosa"])
+    topic: str = Field(..., description="Palabra clave o #hashtag", examples=["inseguridad Bosa"])
+    contexto: str = Field("", description="Opcional: qué significa el tema y qué excluir. Mejora la búsqueda y el filtro "
+                                          "de relevancia", examples=["delincuencia, robos y atracos en la localidad de Bosa, Bogotá"])
     max_videos: int = Field(20, ge=1, le=100, description="Videos a analizar (1–100)")
     comments_per_video: int = Field(50, ge=0, le=300, description="Comentarios por video (0–300)")
+    orden_videos: Orden = Field(
+        "relevancia", description="Qué videos traer: `relevancia` (ranking de TikTok), `mas_likeados` o `mas_recientes`. "
+                                  "En palabras clave lo ordena TikTok (cuesta ~USD 0,0013 extra por video); en #hashtags "
+                                  "se ordena la muestra encontrada")
+    orden_comentarios: Orden = Field(
+        "relevancia", description="Qué comentarios quedarse por video: `relevancia` (orden de TikTok), `mas_likeados` o "
+                                  "`mas_recientes`. Los dos últimos traen el doble de comentarios y se quedan con los "
+                                  "primeros según el orden (duplica el costo de comentarios)")
     modo_prueba: bool = Field(False, description="true = datos sintéticos, sin costo. Útil para probar la instalación")
     confirmar_costo: bool = Field(
         False, description=f"Obligatorio en true si max_videos × comments_per_video supera {MAX_SIN_CONFIRMAR}")
@@ -80,6 +97,7 @@ class AnalyzeIn(BaseModel):
 class SearchIn(BaseModel):
     topic: str = Field(..., examples=["#bogota"])
     max_videos: int = Field(10, ge=1, le=50)
+    orden_videos: Orden = "relevancia"
 
 
 class CommentsIn(BaseModel):
@@ -108,10 +126,19 @@ def _links(report_id: str) -> dict:
             **{f"descargar_{n.replace('.', '_')}": f"{base}/descargar/{n}" for n in ARCHIVOS}}
 
 
-def _cost_note(videos: int, per_video: int) -> str:
-    total = f"{videos * per_video:,}".replace(",", ".")
-    return (f"{videos} videos × {per_video} comentarios = hasta {total} comentarios. "
-            "Costo aproximado: USD 0,5–5 por cada 1.000 comentarios (Apify) más centavos de LLM.")
+def _estimate(body: "AnalyzeIn") -> dict:
+    """Peor caso de Apify con las tarifas vigentes del plan (el LLM suma centavos)."""
+    fetch_videos = min(100, body.max_videos * 2)  # búsqueda ampliada para el filtro de relevancia
+    fetch_comments = body.max_videos * comments_to_fetch(body.comments_per_video, body.orden_comentarios)
+    keyword_sorted = body.orden_videos != "relevancia" and not body.topic.strip().startswith("#")
+    usd = costos.estimate_apify_usd(fetch_videos, fetch_comments, sorted_search=keyword_sorted, n_queries=4)
+    return {"comentarios_a_descargar": fetch_comments, "apify_usd_max": usd}
+
+
+def _cost_note(body: "AnalyzeIn", est: dict) -> str:
+    total = f"{est['comentarios_a_descargar']:,}".replace(",", ".")
+    return (f"{body.max_videos} videos × {body.comments_per_video} comentarios: se descargan hasta {total} comentarios. "
+            f"Costo máximo estimado en Apify: USD {est['apify_usd_max']} (más centavos de LLM).")
 
 
 def _page(title: str, body_html: str, banner: str = "") -> str:
@@ -130,7 +157,7 @@ code,pre{{background:var(--card);border:1px solid var(--line);border-radius:6px}
 .banner{{background:var(--warn);color:var(--warnfg);padding:10px 14px;border-radius:8px;margin-bottom:16px}}
 .mermaid{{background:#fff;border-radius:8px;padding:12px;margin:12px 0;overflow-x:auto}}
 </style></head><body><main>
-<nav><a href="/docs">← Swagger</a><a href="/reportes/ver">Reportes</a><a href="/guia">Guía</a><a href="/como-funciona">Cómo funciona</a></nav>
+<nav><a href="/docs">← Swagger</a><a href="/reportes/ver">Reportes</a><a href="/guia">Guía</a><a href="/como-funciona">Cómo funciona</a><a href="/estructura-json">Estructura del JSON</a></nav>
 {banner}{body_html}
 </main>
 <script type="module">
@@ -161,6 +188,11 @@ def health():
     return {"ok": True, "modo_por_defecto": "mock" if settings.mock else "live"}
 
 
+@app.get("/saldo", tags=["1. Inicio"], summary="Saldo disponible en Apify y si hay que recargar")
+def saldo():
+    return costos.saldo()
+
+
 @app.get("/diagnostico", tags=["1. Inicio"], summary="Verifica Python, paquetes, Apify y LLM (no muestra secretos)")
 def diagnostico():
     from .doctor import run_checks
@@ -174,12 +206,18 @@ def diagnostico():
           description="Tarda 1–5 minutos en modo real. Devuelve las cifras clave, el informe en prosa y "
                       "`enlaces` para ver el reporte en el navegador o descargar los CSV.")
 def analyze(body: AnalyzeIn):
-    total = body.max_videos * body.comments_per_video
-    if not body.modo_prueba and total > MAX_SIN_CONFIRMAR and not body.confirmar_costo:
-        raise HTTPException(status_code=400, detail=(
-            f"Corrida grande: {_cost_note(body.max_videos, body.comments_per_video)} "
-            "Si estás de acuerdo, repite la petición con confirmar_costo: true."))
-    args = dict(topic=body.topic, max_videos=body.max_videos, comments_per_video=body.comments_per_video)
+    if not body.modo_prueba:
+        est = _estimate(body)
+        if est["comentarios_a_descargar"] > MAX_SIN_CONFIRMAR and not body.confirmar_costo:
+            raise HTTPException(status_code=400, detail=(
+                f"Corrida grande. {_cost_note(body, est)} Si estás de acuerdo, repite la petición con confirmar_costo: true."))
+        disp = ((costos.saldo().get("apify") or {}).get("disponible_usd"))
+        if disp is not None and est["apify_usd_max"] > disp:
+            raise HTTPException(status_code=402, detail=(
+                f"Saldo insuficiente en Apify: quedan USD {disp} y esta corrida puede costar hasta USD {est['apify_usd_max']}. "
+                "Reduce videos o comentarios, o recarga en https://console.apify.com/billing"))
+    args = dict(topic=body.topic, max_videos=body.max_videos, comments_per_video=body.comments_per_video,
+                orden_videos=body.orden_videos, orden_comentarios=body.orden_comentarios, contexto=body.contexto)
     if body.modo_prueba == settings.mock:
         result = tools.analyze_tiktok_topic(**args)
     else:
@@ -289,3 +327,8 @@ def guia():
 @app.get("/como-funciona", include_in_schema=False, response_class=HTMLResponse)
 def como_funciona():
     return _doc_page("COMO_FUNCIONA.md", "Cómo funciona")
+
+
+@app.get("/estructura-json", include_in_schema=False, response_class=HTMLResponse)
+def estructura_json():
+    return _doc_page("ESTRUCTURA_JSON.md", "Estructura del JSON")

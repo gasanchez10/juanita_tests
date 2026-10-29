@@ -17,7 +17,7 @@ Herramientas:
 Cuando el usuario pida analizar un tema:
 1. Llama analyze_tiktok_topic (valores por defecto si no indica tamaño de muestra).
 2. Responde con: (a) un tablero corto de estadísticas (tabla Markdown: videos, vistas, comentarios analizados,
-   comentaristas únicos, NSS simple y ponderado, % pos/neg/neutral/mixto con IC95, spam), y
+   comentaristas únicos, NSS simple y ponderado, % pos/neg/neutral con IC95, spam), y
    (b) el campo `informe` COMPLETO, tal cual, sin resumirlo.
 3. Cierra indicando dónde quedó el reporte (output_dir) y ofreciendo 2-3 profundizaciones concretas
    (p. ej. un aspecto, un creador, un perfil de comentarista).

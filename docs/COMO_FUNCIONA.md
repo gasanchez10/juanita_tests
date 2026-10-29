@@ -39,37 +39,44 @@ sequenceDiagram
     participant A as LLM analista<br/>gpt-4.1
     participant D as outputs/
 
-    U->>API: POST /analyze {topic, max_videos, comments_per_video}
-    API->>AP: Buscar videos (palabra clave o #hashtag)
-    AP-->>API: N videos con autor, seguidores, caption, vistas, likes, fecha
-    API->>AP: Comentarios de esas N URLs (M por video, sin respuestas)
+    U->>API: POST /analyze {topic, contexto, max_videos, comments_per_video, orden_videos, orden_comentarios}
+    API->>A: Interpretar el tema y planear la búsqueda
+    A-->>API: Interpretación + 2 a 4 consultas + criterios incluir/excluir
+    API->>AP: Buscar 2N videos (varias consultas, en el orden pedido)
+    AP-->>API: Videos con autor, seguidores, caption, hashtags, vistas, likes, fecha
+    API->>A: ¿Cada video trata del tema? + ángulo, postura, tipo de creador
+    A-->>API: Relevante sí/no con motivo
+    Note over API: Se quedan los N primeros relevantes según orden_videos
+    API->>AP: Comentarios solo de esos N videos (M por video, o 2M si se ordena por likes o fecha)
     AP-->>API: Comentarios con texto, likes, fecha, usuario
-    API->>M: Taxonomía: 5 a 9 subtemas del tema
+    Note over API: Se quedan los M primeros de cada video según orden_comentarios
+    API->>M: Taxonomía: 5 a 9 subtemas del tema interpretado
     M-->>API: ["precio", "resultados", ...]
     par Lotes de 40 comentarios, 6 en paralelo
         API->>M: Etiquetar lote 1
         API->>M: Etiquetar lote 2 … k
     end
     M-->>API: 8 etiquetas por comentario
-    API->>M: Clasificar videos (ángulo, postura, tipo de creador)
-    M-->>API: Etiquetas por video
     API->>API: Estadísticas (sin LLM)
     API->>A: Estadísticas en JSON
     A-->>API: Informe en prosa (10 secciones)
+    API->>AP: Consultar saldo de la cuenta
     API->>D: report.md, report.json, videos.csv, comments.csv
-    API-->>U: Cifras clave + informe + enlaces
+    API-->>U: Cifras clave + informe + costos + saldo + enlaces
 ```
 
 | Paso | Qué hace | Código |
 |---|---|---|
-| 1. Buscar videos | Si el tema empieza con `#`, busca por hashtag; si no, por palabra clave. Quita URLs duplicadas. Toma lo que TikTok rankea primero | `ApifySource.search_videos` en `tiktok_source.py` |
-| 2. Traer comentarios | Hasta M comentarios de primer nivel por video (sin respuestas). Son los más visibles, no todos | `ApifySource.get_comments` |
-| 3. Taxonomía | Una llamada al LLM con hasta 200 comentarios (los 120 con más likes más una muestra repartida) y los captions. Devuelve 5 a 9 subtemas propios de ese tema | `build_taxonomy` en `sentiment.py` |
-| 4. Etiquetar comentarios | Lotes de 40 comentarios, 6 lotes en paralelo, respuesta en JSON. Si un lote falla, sus comentarios quedan como neutrales y el análisis sigue | `classify_comments` |
-| 5. Etiquetar videos | Una llamada con todos los videos: ángulo del contenido, postura del creador y tipo de creador | `classify_videos` |
-| 6. Estadísticas | Cálculos deterministas en Python. Aquí no interviene el LLM | `compute_stats` en `stats.py` |
-| 7. Informe | El modelo analista recibe solo las estadísticas (no los comentarios crudos) y redacta 10 secciones | `expert_report` en `narrative.py` |
-| 8. Guardar | Crea `outputs/AAAAMMDD-HHMMSS_tema/` con 4 archivos | `analyze_topic` en `analysis.py` |
+| 1. Planear la búsqueda | El modelo analista interpreta el tema (desambigua: "inseguridad" junto a un barrio es delincuencia, no inseguridad emocional), genera 2 a 4 consultas como las escribiría alguien en TikTok y define qué incluir y qué excluir. Si el usuario da `contexto`, manda el contexto. Con `#hashtag` solo se busca el hashtag | `plan_search` en `sentiment.py` |
+| 2. Buscar videos | Pide el doble de videos de los solicitados, repartidos entre las consultas. Con palabra clave, TikTok los ordena según `orden_videos`; con hashtag se ordenan aquí. Quita URLs duplicadas | `ApifySource.search_videos` en `tiktok_source.py` |
+| 3. Filtrar por relevancia | El modelo analista decide, video por video, si trata del tema interpretado, y le asigna ángulo, postura y tipo de creador. Se quedan los N primeros relevantes; los descartados quedan en el reporte con su motivo. Si ninguno es relevante, se detiene antes de pagar comentarios | `classify_videos` |
+| 4. Traer comentarios | Solo de los videos relevantes. Con `orden_comentarios = relevancia` se traen M por video en el orden de TikTok; con `mas_likeados` o `mas_recientes` se traen 2M y se quedan los M primeros según ese orden | `ApifySource.get_comments` |
+| 5. Taxonomía | Una llamada con hasta 200 comentarios (los 120 con más likes más una muestra repartida), los captions y la interpretación del tema. Devuelve 5 a 9 subtemas concretos | `build_taxonomy` |
+| 6. Etiquetar comentarios | Lotes de 40 comentarios, 6 lotes en paralelo, respuesta en JSON. Si un lote falla, sus comentarios quedan como neutrales y el análisis sigue | `classify_comments` |
+| 7. Estadísticas | Cálculos deterministas en Python. Aquí no interviene el LLM | `compute_stats` en `stats.py` |
+| 8. Informe | El modelo analista recibe solo las estadísticas (no los comentarios crudos) y redacta 10 secciones | `expert_report` en `narrative.py` |
+| 9. Costos y saldo | Suma los tokens de cada llamada al LLM y los eventos que cobró Apify, y consulta el saldo de la cuenta | `costos.py` |
+| 10. Guardar | Crea `outputs/AAAAMMDD-HHMMSS_tema/` con 4 archivos | `analyze_topic` en `analysis.py` |
 
 ---
 
@@ -78,7 +85,7 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     C["Comentario<br/>texto + tema + taxonomía"] --> L{{"LLM clasificador"}}
-    L --> S["sentiment<br/>positivo · negativo · neutral · mixto"]
+    L --> S["sentiment<br/>positivo · negativo · neutral"]
     L --> SC["score<br/>de −1 a 1"]
     L --> E["emotion<br/>alegría · enojo · tristeza · miedo · sorpresa ·<br/>asco · humor · curiosidad · confianza · ninguna"]
     L --> SA["sarcasm<br/>sí o no"]
@@ -87,7 +94,8 @@ flowchart TB
     L --> PE["persona: rol en la conversación<br/>experiencia propia · interesado · escéptico ·<br/>experto · seguidor · humor · spam/bot · otro"]
     L --> SP["spam<br/>sí o no"]
 
-    V["Video<br/>caption + bio + seguidores"] --> L2{{"LLM clasificador"}}
+    V["Video<br/>caption + hashtags + bio + seguidores"] --> L2{{"LLM analista"}}
+    L2 --> RL["relevante + motivo<br/>¿trata del tema interpretado?"]
     L2 --> AN["angle<br/>educativo · testimonio · opinión · humor ·<br/>publicidad · noticia · polémica · otro"]
     L2 --> CS["creator_stance<br/>a_favor · en_contra · neutral"]
     L2 --> CT["creator_type<br/>texto libre corto: medio, marca,<br/>político, influencer…"]
@@ -95,6 +103,7 @@ flowchart TB
 
 Reglas que sigue el clasificador:
 
+- Solo hay tres polaridades. Si un comentario mezcla elogio y crítica, toma la que domina; si ninguna domina, es neutral.
 - Si hay sarcasmo, el sentimiento es el real, no el literal ("sí claro, y yo soy astronauta 🙄" es negativo).
 - Las preguntas sin postura son neutrales.
 - La **persona** es el rol que se deduce del texto del comentario. **No** infiere edad, género, etnia, salud, religión ni política personal.
@@ -224,6 +233,7 @@ flowchart LR
 
 | Endpoint | Qué hace |
 |---|---|
+| `GET /saldo` | Crédito disponible en Apify, cuántos análisis estándar alcanzan y si hay que recargar |
 | `GET /diagnostico` | Verifica Python, paquetes, llave de Apify y ambos modelos del LLM. Nunca muestra las llaves completas |
 | `POST /analyze` | Corre el pipeline completo. Con `modo_prueba: true` no cuesta nada. Por encima de 3.000 comentarios exige `confirmar_costo: true` |
 | `GET /reportes` y `/reportes/ver` | Lista de corridas guardadas, en JSON o como página |
@@ -242,12 +252,13 @@ Para N comentarios:
 
 | Llamada | Cantidad | Modelo |
 |---|---|---|
+| Plan de búsqueda | 1 | analista |
+| Relevancia y etiquetas de videos | videos encontrados ÷ 40, redondeado hacia arriba | analista |
 | Taxonomía | 1 | clasificador |
 | Etiquetado de comentarios | N ÷ 40, redondeado hacia arriba | clasificador |
-| Etiquetado de videos | 1 | clasificador |
 | Informe | 1 | analista |
 
-Un análisis estándar (20 × 50 = 1.000 comentarios) hace unas 28 llamadas y cuesta centavos de dólar en LLM. El costo principal es Apify: USD 0,5 a 5 por cada 1.000 comentarios, según la tarifa vigente del actor.
+Un análisis estándar (20 × 50 = 1.000 comentarios) hace unas 29 llamadas y cuesta unos centavos de dólar en LLM. El costo principal es Apify: con el plan gratuito, USD 0,0037 por video y USD 0,00125 por comentario, es decir ~USD 1,4 por análisis estándar. Cada reporte trae el costo real de la corrida en `costos` y el saldo en `saldo` (ver [Estructura del JSON](/estructura-json)).
 
 ---
 
